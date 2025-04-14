@@ -88,7 +88,7 @@ The `HYPERREC.PY` script fuses LightGCN embeddings with VLM embeddings using a l
 If you use this code, please cite the repository.
 
 ## License
-Copyright [2025] [Sarthak Kaushal]
+Copyright 2025 Sarthak Kaushal
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
