@@ -1,0 +1,4 @@
+Best Recall Model 1 saved from epoch 110 with Recall@10: 0.0346
+Best Recall Model 2 saved from epoch 282 with Recall@10: 0.0370
+Best NDCG Model 1 saved from epoch 16 with NDCG@10: 0.0190
+Best NDCG Model 2 saved from epoch 110 with NDCG@10: 0.0190

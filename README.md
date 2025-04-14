@@ -84,26 +84,6 @@ The `HYPERREC.PY` script fuses LightGCN embeddings with VLM embeddings using a l
     ```bash 
     python hyperRec.py
     ```
-
-
-## Citation
-If you use this code, please cite the repository.
-
-## License
-Copyright 2025 Sarthak Kaushal
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-  http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
 ## Key Project Results
 The following table summarizes the performance improvements achieved by the proposed multimodal recommendation system:
 
@@ -120,3 +100,19 @@ This work leverages the following resources and tools:
 - [LLaVA 1.5](https://github.com/haotian-liu/LLaVA)
 -[SmolVLM2-2.2B-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM2-2.2B-Instruct)
 - [LightGCN](https://arxiv.org/abs/2002.02126)
+
+## License
+Copyright 2025 Sarthak Kaushal
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
