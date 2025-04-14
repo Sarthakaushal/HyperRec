@@ -1,2 +1,72 @@
 # HyperRec
-Multimodal Recommendation via VLM &amp; GNN Fusion
+![Framework Overview](./assets/framework.png)
+
+*Figure: High-level architecture of the multimodal recommendation system. The framework integrates Vision-Language Model (VLM) embeddings with Graph Neural Network (GNN) representations through a learnable fusion mechanism.*
+# Multimodal Recommendation via VLM & GNN Fusion
+
+This repository implements a multimodal recommendation system that fuses Vision-Language Model (VLM) embeddings with Graph Neural Network (GNN) representations for enhanced recommendation performance. The pipeline is divided into the following stages:
+
+## 1. Hyperparameter Search
+The hyperparameter search is conducted using `LIGHTGCN_HYPERPARAM_TUNING.PY`. This script leverages [Weights & Biases (wandb)](https://wandb.ai/) for efficient hyperparameter optimization. It explores various configurations of LightGCN, including embedding dimensions, number of layers, learning rates, and regularization weights.
+
+### Key Features:
+- Bayesian optimization for hyperparameter tuning.
+- Validation metrics include Recall@K and NDCG@K.
+- Automatic logging of results to wandb.
+
+## 2. LightGCN Training
+The LightGCN model is trained using `LIGHTGCN_FINAL_TRAINING.PY`. This script trains the model on user-item interaction data using a BPR loss function and evaluates it on validation and test sets.
+
+### Key Features:
+- Implements BPR loss for implicit feedback data.
+- Tracks Recall@K and NDCG@K during training.
+- Saves the best-performing models based on validation metrics.
+
+## 3. Inference
+The inference process is handled by `LIGHTGCN_INFER.PY`. This script loads a pre-trained LightGCN model and generates top-K recommendations for a given user.
+
+### Key Features:
+- Supports loading trained models and encoders.
+- Efficient computation of user-item scores.
+- Outputs top-K recommendations with scores.
+
+## 4. Generic VLM Embedding Extraction
+The `GENERIC_VLM_EMBEDDING.PY` script extracts item embeddings using Vision-Language Models (e.g., LLaVA, SmolVLM). These embeddings are used to incorporate multimodal information into the recommendation system.
+
+### Key Features:
+- Supports multiple VLMs for embedding extraction.
+- Processes item metadata and images to generate embeddings.
+- Saves embeddings in a format compatible with downstream tasks.
+
+## 5. HyperRec: Multimodal Fusion Training
+The `HYPERREC.PY` script fuses LightGCN embeddings with VLM embeddings using a learnable fusion mechanism. This enables the recommendation system to leverage both graph-based and multimodal information.
+
+### Key Features:
+- Implements a fusion layer to combine LightGCN and VLM embeddings.
+- Uses a learnable parameter `alpha` to balance the contributions of each modality.
+- Tracks performance metrics during training and saves the best models.
+
+## Getting Started
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/your-repo/HyperRec.git
+    cd HyperRec
+    ```
+
+2. Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3. Follow the pipeline:
+    - Run hyperparameter search: `python LIGHTGCN_HYPERPARAM_TUNING.PY`
+    - Train LightGCN: `python LIGHTGCN_FINAL_TRAINING.PY`
+    - Extract VLM embeddings: `python GENERIC_VLM_EMBEDDING.PY`
+    - Train HyperRec: `python HYPERREC.PY`
+    - Perform inference: `python LIGHTGCN_INFER.PY`
+
+## Citation
+If you use this code, please cite the repository.
+
+## License
+This project is licensed under the MIT License.
