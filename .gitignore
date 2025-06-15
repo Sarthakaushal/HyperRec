@@ -1,2 +1,11 @@
 *.jpg
 *.pth
+*wandb*
+*.pyc
+*.out
+*.png
+*.npy
+*.gz
+*.pyc
+*.inter
+*.json

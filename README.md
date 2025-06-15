@@ -4,8 +4,6 @@
 *Figure: High-level architecture of the multimodal recommendation system. The framework integrates Vision-Language Model (VLM) embeddings with Graph Neural Network (GNN) representations through a learnable fusion mechanism.*
 # Multimodal Recommendation via VLM & GNN Fusion
 
-
-
 This repository implements a multimodal recommendation system that fuses Vision-Language Model (VLM) embeddings with Graph Neural Network (GNN) representations for enhanced recommendation performance. The pipeline is divided into the following stages:
 
 ## 1. Hyperparameter Search

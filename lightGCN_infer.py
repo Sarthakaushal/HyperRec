@@ -67,7 +67,7 @@ def recommend(user_raw_id, model, edge_index, user_encoder, item_encoder, num_us
 
 # === Main ===
 if __name__ == "__main__":
-    checkpoint_path = "best_recall_model_1_epoch_110.pth"  # Replace with actual filename
+    checkpoint_path = "best_lgcn.pth"  # Replace with actual filename
     user_to_query = "B07J3GH1W1"  # Replace with any real user_id from the dataset
 
     edge_index, user_encoder, item_encoder, num_users, num_items = load_data()

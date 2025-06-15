@@ -22,7 +22,7 @@ def bpr_loss(embeddings, edge_index, num_users, num_items, user_item_dict):
     pos_scores = (user_embeddings * pos_item_embeddings).sum(dim=1)
     neg_scores = (user_embeddings * neg_item_embeddings).sum(dim=1)
 
-    loss = -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
+    loss = -torch.log(torch.sigmoid(pos_scores - 2*neg_scores)).mean()
     return loss
 
 def recall_at_k(embeddings, num_users, num_items, user_item_dict, k=10):

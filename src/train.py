@@ -3,18 +3,30 @@ from src.dataloader import load_and_encode_data
 from src.loss_metrics import bpr_loss, recall_at_k, ndcg_at_k
 import torch
 import torch.optim as optim
+from src.Enums import *
+import os
 
-if __name__ == '__main__':
-    data = load_and_encode_data("data/All_Beauty.train.csv.gz", "data/All_Beauty.valid.csv.gz", "data/All_Beauty.test.csv.gz")
+def train():
+    data = load_and_encode_data(
+        os.path.join(FilePath.ROOT_DATA_DIR.value, FilePath.TRAIN_DATA.value),
+        os.path.join(FilePath.ROOT_DATA_DIR.value, FilePath.VALIDATION_DATA.value),
+        os.path.join(FilePath.ROOT_DATA_DIR.value, FilePath.TEST_DATA.value)
+        )
+    print("Loaded the dataset")
     model = get_lightgcn_model(data['train_data'].num_nodes)
-    optimizer = optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-2)
+    optimizer = TrainConfig.optim.value(model.parameters(), lr = TrainConfig.lr.value,
+                            weight_decay= TrainConfig.decay.value)
+    # optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-2)
     best_recall = 0
 
-    for epoch in range(300):
+    for epoch in range(TrainConfig.epochs.value):
         model.train()
         optimizer.zero_grad()
         embeddings = model.get_embedding(data['train_data'].edge_index)
-        loss = bpr_loss(embeddings, data['train_data'].edge_index, data['num_users'], data['num_items'], data['train_df'].groupby('userID')['itemID'].apply(set).to_dict())
+        loss = bpr_loss(embeddings, 
+            data['train_data'].edge_index,data['num_users'], data['num_items'], 
+            data['train_df'].groupby('userID')['itemID'].apply(set).to_dict()
+        )
         loss.backward()
         optimizer.step()
 

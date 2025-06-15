@@ -1,0 +1,21 @@
+dataset: amazon_book_train
+field_separator: "\t"
+USER_ID_FIELD: user_id
+ITEM_ID_FIELD: item_id
+TIME_FIELD: timestamp
+
+load_col:
+    inter: [user_id, item_id, timestamp]
+
+model: LightGCN
+
+learning_rate: 0.001
+embedding_size: 64
+n_layers: 2
+
+train_batch_size: 2048
+neg_sampling: {'uniform': 100}
+epochs: 100
+use_gpu: True
+eval_step: 5
+stopping_step: 10

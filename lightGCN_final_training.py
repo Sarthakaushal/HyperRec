@@ -1,207 +1,257 @@
-import pandas as pd
 import torch
-from torch_geometric.data import Data
-from sklearn.preprocessing import LabelEncoder
-from torch_geometric.nn import LightGCN
-import torch.optim as optim
+import pandas as pd
 import numpy as np
+import wandb
+from torch_geometric.utils import dropout_edge
+from torch_geometric.nn import LightGCN
+from sklearn.preprocessing import LabelEncoder
+from src.Enums import FilePath
+import torch.nn.functional as F
+import math
 
-# Set seed for reproducibility
-seed = 42
-torch.manual_seed(seed)
-np.random.seed(seed)
+def recall_at_k(full_embeddings, num_users, num_items, train_dict, val_dict, k=10):
+    user_embeds = full_embeddings[:num_users]
+    item_embeds = full_embeddings[num_users:]
+    scores = torch.matmul(user_embeds, item_embeds.T)
 
-# Load the predefined data splits
-train_df = pd.read_csv('data/All_Beauty.train.csv.gz')
-val_df = pd.read_csv('data/All_Beauty.valid.csv.gz')
-test_df = pd.read_csv('data/All_Beauty.test.csv.gz')
+    # mask train items
+    for u, seen in train_dict.items():
+        if seen:
+            scores[u, list(seen)] = -1e9
 
-# Ensure the columns are named correctly
-train_df = train_df[['user_id', 'parent_asin', 'rating']]
-train_df.columns = ['userID', 'itemID', 'rating']
+    # get top‑k
+    _, topk = torch.topk(scores, k=k, dim=1)
 
-val_df = val_df[['user_id', 'parent_asin', 'rating']]
-val_df.columns = ['userID', 'itemID', 'rating']
+    # only iterate over users with val items
+    valid_users = list(val_dict.keys())
+    recall = 0.0
+    for u in valid_users:
+        true_items = val_dict[u]
+        recs = set(topk[u].tolist())
+        recall += len(recs & true_items) / len(true_items)
 
-test_df = test_df[['user_id', 'parent_asin', 'rating']]
-test_df.columns = ['userID', 'itemID', 'rating']
+    return recall / len(valid_users) 
 
-# Encode user and item IDs as integers
-user_encoder = LabelEncoder()
-item_encoder = LabelEncoder()
+def ndcg_at_k(full_embeddings, num_users, num_items, train_dict, val_dict, k=10):
+    user_embeds = full_embeddings[:num_users]
+    item_embeds = full_embeddings[num_users:]
+    scores = torch.matmul(user_embeds, item_embeds.T)
 
-# Fit the encoders on the combined data to ensure consistent encoding
-combined_df = pd.concat([train_df, val_df, test_df])
-user_encoder.fit(combined_df['userID'])
-item_encoder.fit(combined_df['itemID'])
+    # mask train items
+    for u, seen in train_dict.items():
+        if seen:
+            scores[u, list(seen)] = -1e9
 
-train_df['userID'] = user_encoder.transform(train_df['userID'])
-train_df['itemID'] = item_encoder.transform(train_df['itemID'])
-val_df['userID'] = user_encoder.transform(val_df['userID'])
-val_df['itemID'] = item_encoder.transform(val_df['itemID'])
-test_df['userID'] = user_encoder.transform(test_df['userID'])
-test_df['itemID'] = item_encoder.transform(test_df['itemID'])
+    _, topk = torch.topk(scores, k=k, dim=1)
 
-# Number of users and items
-num_users = combined_df['userID'].nunique()
-num_items = combined_df['itemID'].nunique()
+    valid_users = list(val_dict.keys())
+    total_ndcg = 0.0
+    for u in valid_users:
+        true_items = val_dict[u]
+        dcg = 0.0
+        for rank, item in enumerate(topk[u].tolist()):
+            if item in true_items:
+                dcg += 1.0 / math.log2(rank + 2)
+        ideal_len = min(len(true_items), k)
+        idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_len))
+        total_ndcg += (dcg / idcg) if idcg > 0 else 0.0
 
-# Create user-item dictionaries for training, validation, and test sets
-train_user_item_dict = train_df.groupby('userID')['itemID'].apply(set).to_dict()
-val_user_item_dict = val_df.groupby('userID')['itemID'].apply(set).to_dict()
-test_user_item_dict = test_df.groupby('userID')['itemID'].apply(set).to_dict()
+    return total_ndcg / len(valid_users)  # <<— divide by #users with val
 
-# Create PyG data objects for training, validation, and testing
-train_edge_index = torch.tensor([train_df['userID'].values, train_df['itemID'].values], dtype=torch.long)
-val_edge_index = torch.tensor([val_df['userID'].values, val_df['itemID'].values], dtype=torch.long)
-test_edge_index = torch.tensor([test_df['userID'].values, test_df['itemID'].values], dtype=torch.long)
+if __name__ == "__main__":
+    # === Config ===
+    config = {
+        "model_path":    "best_lgcn.pth",  # where we'll save the best model
+        "learning_rate": 1e-2,
+        "reg_weight":    1e-7,
+        "epochs":        1000,
+        "patience":      200,
+        "eval_every":    2,
+        "batch_size":    256,
+        "num_neg":       50
+    }
+    wandb.init(project="lightgcn_mini_batch", config=config)
+    cfg = wandb.config
 
-train_data = Data(edge_index=train_edge_index)
-val_data = Data(edge_index=val_edge_index)
-test_data = Data(edge_index=test_edge_index)
+    # === Reproducibility ===
+    seed = 120
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-train_data.num_nodes = num_users + num_items
-val_data.num_nodes = num_users + num_items
-test_data.num_nodes = num_users + num_items
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Define BPR loss function
-def bpr_loss(embeddings, edge_index, num_users, num_items, user_item_dict):
-    user_indices = edge_index[0]
-    pos_item_indices = edge_index[1]
+    # === Data Loading ===
+    train_df = pd.read_csv(FilePath.ROOT_DATA_DIR.value + "data/All_Beauty.train.csv.gz")[['user_id','parent_asin']]
+    val_df   = pd.read_csv(FilePath.ROOT_DATA_DIR.value + "data/All_Beauty.valid.csv.gz")[['user_id','parent_asin']]
+    test_df  = pd.read_csv(FilePath.ROOT_DATA_DIR.value + "data/All_Beauty.test.csv.gz")[['user_id','parent_asin']]
+    
+    train_df.columns = val_df.columns = test_df.columns = ['userID','itemID']
+    combined = pd.concat([train_df, val_df, test_df])
 
-    user_embeddings = embeddings[user_indices]
-    pos_item_embeddings = embeddings[pos_item_indices + num_users]
+    user_enc = LabelEncoder().fit(combined['userID'])
+    item_enc = LabelEncoder().fit(combined['itemID'])
+    for df in (train_df, val_df):
+        df['userID'] = user_enc.transform(df['userID'])
+        df['itemID'] = item_enc.transform(df['itemID'])
 
-    # Vectorized negative sampling
-    neg_item_indices = torch.tensor(
-        np.random.choice(num_items, size=user_indices.size(0), replace=True),
-        device=embeddings.device
+    num_users = len(user_enc.classes_)   # now includes any users in test set too
+    num_items = len(item_enc.classes_)   # matches llava_np.shape[0]
+    edge_index = torch.tensor([
+        train_df['userID'].values,
+        train_df['itemID'].values
+    ], dtype=torch.long).to(device)
+
+
+    train_dict = train_df.groupby('userID')['itemID'].apply(set).to_dict()
+    val_dict   = val_df.groupby('userID')['itemID'].apply(set).to_dict()
+
+    # flatten edges for sampling
+    all_users = train_df['userID'].values
+    all_items = train_df['itemID'].values
+    num_edges = len(all_users)
+
+    # === Model, Optimizer & Scheduler ===
+    model = LightGCN(num_nodes=num_users+num_items,
+                     embedding_dim=64,
+                     num_layers=2).to(device)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=cfg.learning_rate,
+        weight_decay=cfg.reg_weight
+    )
+    # warmup for 50 epochs, then constant
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.1,
+        total_iters=50
     )
 
-    # Ensure negative samples are not positive samples
-    mask = torch.tensor(
-        [neg_item not in user_item_dict.get(user.item(), set()) for user, neg_item in zip(user_indices, neg_item_indices)],
-        device=embeddings.device
-    )
-    neg_item_indices = neg_item_indices[mask]
+    best_rec, best_ndcg = 0.0, 0.0
+    epochs_no_imp = 0
 
-    neg_item_embeddings = embeddings[neg_item_indices + num_users]
+    # === Training ===
+    for epoch in range(1, cfg.epochs + 1):
+        model.train()
+        epoch_loss = 0.0
 
-    pos_scores = (user_embeddings * pos_item_embeddings).sum(dim=1)
-    neg_scores = (user_embeddings * neg_item_embeddings).sum(dim=1)
+        perm = np.random.permutation(num_edges)
+        for start in range(0, num_edges, cfg.batch_size):
+            idx = perm[start:start + cfg.batch_size]
+            u_batch   = torch.tensor(all_users[idx], device=device)
+            pos_batch = torch.tensor(all_items[idx], device=device)
 
-    loss = -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
-    return loss
+            # sample multi-negatives
+            neg_batch = torch.randint(
+                0, num_items, (len(idx), cfg.num_neg), device=device
+            )
+            # avoid sampling positives
+            for j, u in enumerate(u_batch):
+                mask = neg_batch[j] == pos_batch[j]
+                while mask.any():
+                    neg_batch[j, mask] = torch.randint(
+                        0, num_items, (mask.sum().item(),), device=device
+                    )
+                    mask = neg_batch[j] == pos_batch[j]
 
-def recall_at_k(embeddings, edge_index, num_users, num_items, user_item_dict, k=10):
-    user_indices = torch.arange(num_users, device=embeddings.device)
-    user_embeddings = embeddings[user_indices]
+            # edge-dropout for propagation
+            drop_ei, _ = dropout_edge(edge_index, p=0.5)
+            raw = model.get_embedding(drop_ei)
+            gcn = F.normalize(raw, p=2, dim=1)
 
-    item_indices = torch.arange(num_items, device=embeddings.device)
-    item_embeddings = embeddings[item_indices + num_users]
+            # lookup embeddings
+            u_emb   = gcn[u_batch]
+            pos_emb = gcn[pos_batch + num_users]
+            neg_emb = gcn[neg_batch + num_users]  # [B, M, D]
 
-    scores = torch.matmul(user_embeddings, item_embeddings.t())
-    _, top_k_indices = torch.topk(scores, k=k, dim=1)
+            # compute scores
+            pos_scores = (u_emb * pos_emb).sum(dim=1, keepdim=True)    # [B,1]
+            neg_scores = (u_emb.unsqueeze(1) * neg_emb).sum(dim=2)     # [B,M]
 
-    recall = 0
-    for user in user_indices:
-        true_items = user_item_dict.get(user.item(), set())
-        recommended_items = top_k_indices[user]
-        recall += len(set(recommended_items.cpu().numpy()) & set(true_items)) / len(true_items) if true_items else 0
+            # BPR loss
+            loss = -torch.log(torch.sigmoid(pos_scores - neg_scores)).mean()
 
-    return recall / num_users
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
 
-def ndcg_at_k(embeddings, edge_index, num_users, num_items, user_item_dict, k=10):
-    user_indices = torch.arange(num_users, device=embeddings.device)
-    user_embeddings = embeddings[user_indices]
+            epoch_loss += loss.item() * len(idx)
 
-    item_indices = torch.arange(num_items, device=embeddings.device)
-    item_embeddings = embeddings[item_indices + num_users]
+            # batch‐level logging
+            wandb.log({
+                "train/batch_loss":       loss.item(),
+                "train/pos_score_mean":   pos_scores.mean().item(),
+                "train/neg_score_mean":   neg_scores.mean().item(),
+                "train/pos_score_std":    pos_scores.std().item(),
+                "train/neg_score_std":    neg_scores.std().item(),
+                "epoch":                  epoch
+            })
 
-    scores = torch.matmul(user_embeddings, item_embeddings.t())
-    _, top_k_indices = torch.topk(scores, k=k, dim=1)
+        # epoch‐level logging
+        epoch_loss /= num_edges
+        wandb.log({"train/epoch_loss": epoch_loss, "epoch": epoch})
 
-    ndcg = 0
-    for user in user_indices:
-        true_items = user_item_dict.get(user.item(), set())
-        recommended_items = top_k_indices[user]
-        dcg = 0
-        idcg = 0
-        for i, item in enumerate(recommended_items):
-            if item.item() in true_items:
-                dcg += 1 / np.log2(i + 2)
-        for i in range(min(len(true_items), k)):
-            idcg += 1 / np.log2(i + 2)
-        ndcg += dcg / idcg if idcg > 0 else 0
+        # LR warmup
+        scheduler.step()
 
-    return ndcg / num_users
+        # === Validation ===
+        if epoch % cfg.eval_every == 0:
+            model.eval()
+            with torch.no_grad():
+                # propagate on train + val edges
+                val_ei  = torch.tensor([
+                    val_df['userID'].values,
+                    val_df['itemID'].values
+                ], dtype=torch.long).to(device)
+                full_ei = torch.cat([edge_index, val_ei], dim=1)
 
-# Define the training function
-def train():
-    # Hyperparameters
-    embedding_dim = 128
-    num_layers = 2
-    learning_rate = 0.01
-    reg_weight = 1e-2
-    epochs = 300
+                raw_full    = model.get_embedding(full_ei)
+                full_embeds = F.normalize(raw_full, p=2, dim=1)
 
-    # Initialize LightGCN model
-    model = LightGCN(num_nodes=train_data.num_nodes, embedding_dim=embedding_dim, num_layers=num_layers)
+                rec  = recall_at_k(full_embeds, num_users, num_items,
+                                   train_dict, val_dict, k=10)
+                ndcg = ndcg_at_k(full_embeds, num_users, num_items,
+                                 train_dict, val_dict, k=10)
 
-    # Initialize optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=reg_weight)
+            wandb.log({
+                "val/recall": rec,
+                "val/ndcg":  ndcg,
+                "epoch":     epoch
+            })
 
-    # Variables to track the best models
-    best_recall_models = []
-    best_ndcg_models = []
+            # save best
+            if rec > best_rec:
+                best_rec = rec
+                best_ndcg = ndcg
+                torch.save(model.state_dict(), cfg.model_path)
+                epochs_no_imp = 0
+            else:
+                epochs_no_imp += 1
 
-    # Training loop
-    model.train()
-    for epoch in range(epochs):
-        optimizer.zero_grad()
-        embeddings = model.get_embedding(train_data.edge_index)
-        loss = bpr_loss(embeddings, train_data.edge_index, num_users, num_items, train_user_item_dict)
-        loss.backward()
-        optimizer.step()
+            if epochs_no_imp >= cfg.patience:
+                print(f"Early stopping at epoch {epoch}")
+                break
 
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
+    wandb.finish()
 
-        if epoch % 2 == 1:  # Validate every 2 epochs
-            val_embeddings = model.get_embedding(val_data.edge_index)
-            val_recall = recall_at_k(val_embeddings, val_data.edge_index, num_users, num_items, val_user_item_dict)
-            val_ndcg = ndcg_at_k(val_embeddings, val_data.edge_index, num_users, num_items, val_user_item_dict)
-            val_loss = bpr_loss(val_embeddings, val_data.edge_index, num_users, num_items, val_user_item_dict)
+    # optionally, reload best model:
+    model.load_state_dict(torch.load(cfg.model_path))
+    print(f"Training complete. Best Recall@10 = {best_rec:.4f}, NDCG@10 = {best_ndcg:.4f}")
+    
+    # after wandb.finish()
+model.load_state_dict(torch.load(cfg.model_path))
+with torch.no_grad():
+    # full‐graph propagation on train+val edges
+    val_ei  = torch.tensor([val_df.userID.values, val_df.itemID.values], device=device)
+    full_ei = torch.cat([edge_index, val_ei], dim=1)
+    raw_full    = model.get_embedding(full_ei)
+    full_embeds = F.normalize(raw_full, p=2, dim=1)
 
-            print(f"Epoch {epoch+1}/{epochs}, Validation Loss: {val_loss.item()}, Validation Recall@10: {val_recall:.4f}, Validation NDCG@10: {val_ndcg:.4f}")
+    final_rec  = recall_at_k(full_embeds, num_users, num_items, train_dict, val_dict, k=10)
+    final_ndcg = ndcg_at_k(  full_embeds, num_users, num_items, train_dict, val_dict, k=10)
 
-            # Save models with the highest validation recall
-            if len(best_recall_models) < 2 or val_recall > min(best_recall_models, key=lambda x: x[0])[0]:
-                if len(best_recall_models) == 2:
-                    best_recall_models.remove(min(best_recall_models, key=lambda x: x[0]))
-                best_recall_models.append((val_recall, epoch, model.state_dict()))
-                print(f"Model saved for highest Recall@10 at epoch {epoch+1}")
-
-            # Save models with the highest validation NDCG
-            if len(best_ndcg_models) < 2 or val_ndcg > min(best_ndcg_models, key=lambda x: x[0])[0]:
-                if len(best_ndcg_models) == 2:
-                    best_ndcg_models.remove(min(best_ndcg_models, key=lambda x: x[0]))
-                best_ndcg_models.append((val_ndcg, epoch, model.state_dict()))
-                print(f"Model saved for highest NDCG@10 at epoch {epoch+1}")
-
-            test_embeddings = model.get_embedding(test_data.edge_index)
-            test_recall = recall_at_k(test_embeddings, test_data.edge_index, num_users, num_items, test_user_item_dict)
-            test_ndcg = ndcg_at_k(test_embeddings, test_data.edge_index, num_users, num_items, test_user_item_dict)
-
-            print(f"Epoch {epoch+1}/{epochs}, Test Recall@10: {test_recall:.4f}, Test NDCG@10: {test_ndcg:.4f}")
-
-    # Save the best models to disk
-    for i, (recall, epoch, state_dict) in enumerate(best_recall_models):
-        torch.save(state_dict, f"best_recall_model_{i+1}_epoch_{epoch+1}.pth")
-        print(f"Best Recall Model {i+1} saved from epoch {epoch+1} with Recall@10: {recall:.4f}")
-
-    for i, (ndcg, epoch, state_dict) in enumerate(best_ndcg_models):
-        torch.save(state_dict, f"best_ndcg_model_{i+1}_epoch_{epoch+1}.pth")
-        print(f"Best NDCG Model {i+1} saved from epoch {epoch+1} with NDCG@10: {ndcg:.4f}")
-
-# Run the training
-train()
+print(f"BEST MODEL → Recall@10: {final_rec:.4f}, NDCG@10: {final_ndcg:.4f}")
